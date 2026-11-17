@@ -7,11 +7,14 @@ on:
     branches: [ci/development]
 
 env:
-  IMAGE_NAME: hello-api-go
+  APP_NAME: hello-api-go
+  ENVIRONMENT: dev
+  AZURE_RESOURCE_GROUP: rg-hello-api-go-dev
   SERVICE_PORT: "3000"
   READINESS_PATH: /health
-  AZURE_RESOURCE_GROUP: rg-hello-api-go-dev
-  AZURE_CONTAINER_APP: hello-api-go-dev
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -21,38 +24,81 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - run: gofmt -l . && test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test ./...
+      - name: Lint Bicep
+        run: az bicep build --file infra/main.bicep --stdout > /dev/null
 
-  build-push:
+  infra:
     needs: test
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    environment: development
     permissions:
+      id-token: write
       contents: read
-      packages: write
+    outputs:
+      acr_login_server: ${{ steps.deploy.outputs.acr_login_server }}
+      container_app: ${{ steps.deploy.outputs.container_app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy Bicep
+        id: deploy
+        run: |
+          # Image yang sedang jalan dipertahankan agar deploy infra tidak mengembalikan app ke image quickstart.
+          CURRENT_IMAGE=$(az containerapp show --name "$APP_NAME-$ENVIRONMENT" --resource-group "$AZURE_RESOURCE_GROUP" \
+            --query "properties.template.containers[0].image" -o tsv 2>/dev/null || true)
+          PARAMS="environmentName=$ENVIRONMENT appName=$APP_NAME targetPort=$SERVICE_PORT"
+          if [ -n "$CURRENT_IMAGE" ]; then PARAMS="$PARAMS containerImage=$CURRENT_IMAGE"; fi
+          az deployment group create \
+            --name "infra-${GITHUB_SHA::8}" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --template-file infra/main.bicep \
+            --parameters $PARAMS \
+            --query properties.outputs -o json > outputs.json
+          echo "acr_login_server=$(jq -r .acrLoginServer.value outputs.json)" >> "$GITHUB_OUTPUT"
+          echo "container_app=$(jq -r .containerAppName.value outputs.json)" >> "$GITHUB_OUTPUT"
+          echo "app_url=$(jq -r .appUrl.value outputs.json)" >> "$GITHUB_OUTPUT"
+
+  build-push:
+    needs: infra
+    runs-on: ubuntu-latest
+    environment: development
+    permissions:
+      id-token: write
+      contents: read
     outputs:
       image: ${{ steps.meta.outputs.image }}
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: azure/login@v2
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Login to ACR
+        run: az acr login --name "${{ needs.infra.outputs.acr_login_server }}"
       - id: meta
-        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}:${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+        run: echo "image=${{ needs.infra.outputs.acr_login_server }}/$APP_NAME:${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
             ${{ steps.meta.outputs.image }}
-            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:development
+            ${{ needs.infra.outputs.acr_login_server }}/${{ env.APP_NAME }}:development
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
-    needs: build-push
-    if: github.event_name == 'push'
+    needs: [infra, build-push]
     runs-on: ubuntu-latest
     environment: development
     permissions:
@@ -64,16 +110,28 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Deploy to Azure Container Apps
+      - name: Update Container App
         env:
           IMAGE: ${{ needs.build-push.outputs.image }}
+          CONTAINER_APP: ${{ needs.infra.outputs.container_app }}
         run: |
           az containerapp update \
-            --name "$AZURE_CONTAINER_APP" \
+            --name "$CONTAINER_APP" \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --image "$IMAGE" \
-            --set-env-vars APP_ENV=development PORT=$SERVICE_PORT \
+            --revision-suffix "${GITHUB_SHA::8}" \
             --output none
-          FQDN=$(az containerapp show --name "$AZURE_CONTAINER_APP" --resource-group "$AZURE_RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)
+          FQDN=$(az containerapp show --name "$CONTAINER_APP" --resource-group "$AZURE_RESOURCE_GROUP" \
+            --query properties.configuration.ingress.fqdn -o tsv)
           echo "deployed $IMAGE -> https://$FQDN"
-          curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "https://$FQDN$READINESS_PATH"
+          echo "## Deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- image: \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- url: https://$FQDN" >> "$GITHUB_STEP_SUMMARY"
+      - name: Smoke test
+        env:
+          CONTAINER_APP: ${{ needs.infra.outputs.container_app }}
+        run: |
+          FQDN=$(az containerapp show --name "$CONTAINER_APP" --resource-group "$AZURE_RESOURCE_GROUP" \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          curl -fsS --retry 12 --retry-delay 5 --retry-all-errors "https://$FQDN$READINESS_PATH"
+          curl -fsS "https://$FQDN/"
