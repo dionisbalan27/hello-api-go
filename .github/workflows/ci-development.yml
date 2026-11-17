@@ -30,9 +30,27 @@ jobs:
       - name: Lint Bicep
         run: az bicep build --file infra/main.bicep --stdout > /dev/null
 
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      azure_ready: ${{ steps.check.outputs.azure_ready }}
+    steps:
+      - id: check
+        env:
+          CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          if [ -n "$CLIENT_ID" ] && [ -n "$TENANT_ID" ] && [ -n "$SUBSCRIPTION_ID" ]; then
+            echo "azure_ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "azure_ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Secret AZURE_* belum diisi; job infra, build-push dan deploy dilewati."
+          fi
+
   infra:
-    needs: test
-    if: github.event_name == 'push'
+    needs: [test, preflight]
+    if: github.event_name == 'push' && needs.preflight.outputs.azure_ready == 'true'
     runs-on: ubuntu-latest
     environment: development
     permissions:
