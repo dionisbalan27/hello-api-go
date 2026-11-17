@@ -1,0 +1,79 @@
+name: ci-development
+
+on:
+  push:
+    branches: [ci/development]
+  pull_request:
+    branches: [ci/development]
+
+env:
+  IMAGE_NAME: hello-api-go
+  SERVICE_PORT: "3000"
+  READINESS_PATH: /health
+  AZURE_RESOURCE_GROUP: rg-hello-api-go-dev
+  AZURE_CONTAINER_APP: hello-api-go-dev
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
+  build-push:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}:${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:development
+
+  deploy:
+    needs: build-push
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: development
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy to Azure Container Apps
+        env:
+          IMAGE: ${{ needs.build-push.outputs.image }}
+        run: |
+          az containerapp update \
+            --name "$AZURE_CONTAINER_APP" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --image "$IMAGE" \
+            --set-env-vars APP_ENV=development PORT=$SERVICE_PORT \
+            --output none
+          FQDN=$(az containerapp show --name "$AZURE_CONTAINER_APP" --resource-group "$AZURE_RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)
+          echo "deployed $IMAGE -> https://$FQDN"
+          curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "https://$FQDN$READINESS_PATH"
