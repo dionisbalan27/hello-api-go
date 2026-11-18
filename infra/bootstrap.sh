@@ -21,6 +21,7 @@ TENANT_ID=$(az account show --query tenantId -o tsv)
 az provider register --namespace Microsoft.App --wait
 az provider register --namespace Microsoft.ContainerRegistry --wait
 az provider register --namespace Microsoft.OperationalInsights --wait
+az provider register --namespace Microsoft.ManagedIdentity --wait
 
 echo "==> resource group $RG ($LOCATION)"
 az group create --name "$RG" --location "$LOCATION" --tags app=$APP_NAME environment=$ENVIRONMENT --output none
