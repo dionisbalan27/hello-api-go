@@ -69,8 +69,12 @@ jobs:
       - name: Prepare Azure CLI
         run: |
           az extension add --name containerapp --upgrade --only-show-errors
+          # Registrasi provider adalah aksi level subscription (dilakukan sekali oleh bootstrap.sh);
+          # identitas pipeline hanya punya hak di resource group, jadi di sini cukup diperiksa.
           for ns in Microsoft.App Microsoft.ContainerRegistry Microsoft.OperationalInsights Microsoft.ManagedIdentity; do
-            az provider register --namespace "$ns" --wait --only-show-errors
+            state=$(az provider show --namespace "$ns" --query registrationState -o tsv 2>/dev/null || echo unknown)
+            echo "$ns: $state"
+            [ "$state" = "Registered" ] || echo "::warning::Provider $ns belum Registered; jalankan 'az provider register --namespace $ns --wait' sebagai pemilik subscription."
           done
       - name: Deploy Bicep
         id: deploy
