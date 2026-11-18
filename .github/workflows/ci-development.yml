@@ -24,6 +24,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: false
       - run: gofmt -l . && test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test ./...
