@@ -46,10 +46,22 @@ for ROLE in "Contributor" "User Access Administrator"; do
 done
 
 # Token OIDC GitHub dipercaya hanya untuk branch ci/development dan environment GitHub "development".
-for SUBJECT in \
-  "repo:${GITHUB_OWNER}/${GITHUB_REPO}:ref:refs/heads/ci/development" \
-  "repo:${GITHUB_OWNER}/${GITHUB_REPO}:environment:development"; do
-  NAME=$(echo "$SUBJECT" | tr ':/' '--')
+# Subject claim GitHub kini menyertakan ID pemilik dan ID repo (owner@id/repo@id); keduanya diambil
+# dari API publik GitHub. Format lama tanpa ID tetap didaftarkan untuk kompatibilitas.
+OWNER_ID=$(curl -fsS "https://api.github.com/users/${GITHUB_OWNER}" | sed -n 's/^  "id": \([0-9]*\),/\1/p' | head -1)
+REPO_ID=$(curl -fsS "https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}" | sed -n 's/^  "id": \([0-9]*\),/\1/p' | head -1)
+REPO_CLAIMS="${GITHUB_OWNER}/${GITHUB_REPO}"
+if [ -n "$OWNER_ID" ] && [ -n "$REPO_ID" ]; then
+  REPO_CLAIMS="${GITHUB_OWNER}@${OWNER_ID}/${GITHUB_REPO}@${REPO_ID} ${REPO_CLAIMS}"
+else
+  echo "   peringatan: ID GitHub tidak terbaca, hanya subject tanpa ID yang didaftarkan"
+fi
+SUBJECTS=""
+for CLAIM in $REPO_CLAIMS; do
+  SUBJECTS="$SUBJECTS repo:${CLAIM}:ref:refs/heads/ci/development repo:${CLAIM}:environment:development"
+done
+for SUBJECT in $SUBJECTS; do
+  NAME=$(echo "$SUBJECT" | tr ':/@' '---')
   az ad app federated-credential create --id "$OBJECT_ID" --parameters "{
     \"name\": \"$NAME\",
     \"issuer\": \"https://token.actions.githubusercontent.com\",
