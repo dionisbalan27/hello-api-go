@@ -1,5 +1,7 @@
 # hello-api-go
 
+Aplikasi hidup di: https://hello-api-go-dev.thankfulisland-969918a9.southeastasia.azurecontainerapps.io (environment dev; container berhenti saat tidak ada trafik, request pertama setelah idle butuh beberapa detik).
+
 API Go satu endpoint yang dideploy ke **Azure Container Apps** lewat **GitHub Actions**, dengan infrastruktur sebagai kode (**Bicep**), image di **Azure Container Registry**, dan autentikasi pipeline ke Azure lewat **OIDC** tanpa menyimpan rahasia.
 
 Alurnya meniru pola backend Adhara (auth-service, customer-service): setiap merge ke branch `ci/development` otomatis menjalankan test, build image, lalu deploy.
