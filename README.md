@@ -1,5 +1,7 @@
 # hello-api-go
 
+Panduan langkah demi langkah dari nol, termasuk semua masalah yang sempat muncul dan perbaikannya: [docs/PANDUAN-DEPLOY-AZURE.md](docs/PANDUAN-DEPLOY-AZURE.md).
+
 Aplikasi hidup di: https://hello-api-go-dev.thankfulisland-969918a9.southeastasia.azurecontainerapps.io (environment dev; container berhenti saat tidak ada trafik, request pertama setelah idle butuh beberapa detik).
 
 API Go satu endpoint yang dideploy ke **Azure Container Apps** lewat **GitHub Actions**, dengan infrastruktur sebagai kode (**Bicep**), image di **Azure Container Registry**, dan autentikasi pipeline ke Azure lewat **OIDC** tanpa menyimpan rahasia.
